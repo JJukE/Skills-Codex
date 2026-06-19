@@ -8,6 +8,7 @@ Maintain portable skills that can be installed into:
 
 - Docker research Codex: `/root/.codex/skills/`
 - Local LLM Wiki Codex: `/Users/{user_name}/.codex/skills/`
+- Repo-level workspace installs: `.agents/skills/`
 - This shared repository as a source of truth for installable skills
 
 Research skills support implementations, experiments, reproductions, baselines, and related engineering workflows. LLM Wiki skills support second-brain workflows, knowledge capture, documentation, synthesis, and personal wiki maintenance.
@@ -19,7 +20,7 @@ This is a public repository. Do not add personal, private, or sensitive informat
 - Do not commit real names, private usernames, email addresses, phone numbers, addresses, account IDs, API keys, tokens, credentials, private URLs, internal hostnames, or unpublished research data.
 - Do not include private LLM Wiki notes, second-brain content, conversation exports, personal journal entries, or copied private documents.
 - Use placeholders in examples, such as `{user_name}`, `{project_name}`, `{repo_url}`, `{api_key}`, and `{private_path}`.
-- Keep environment-specific paths generic unless the path is a documented Codex convention, such as `/root/.codex/skills/` or `/Users/{user_name}/.codex/skills/`.
+- Keep environment-specific paths generic unless the path is a documented Codex convention, such as `/root/.codex/skills/`, `/Users/{user_name}/.codex/skills/`, or `.agents/skills/`.
 - Before committing, review new and changed files for secrets, identifying details, and private knowledge-base content.
 - If sensitive information is accidentally committed, stop and ask the user how they want to rotate secrets and rewrite history.
 
@@ -27,6 +28,7 @@ This is a public repository. Do not add personal, private, or sensitive informat
 
 - Do not assume a skill is only for one environment unless its `SKILL.md` says so.
 - Keep skills portable across Docker and local macOS-style paths when practical.
+- For externally sourced vendored skills, preserve provenance or version metadata such as `.graphify_version`.
 - Do not hard-code user-specific paths except as documented examples.
 - Preserve user changes in the worktree. Do not restore, delete, or rewrite unrelated files without explicit instruction.
 - Use ASCII unless an existing file or skill content requires otherwise.
@@ -34,19 +36,28 @@ This is a public repository. Do not add personal, private, or sensitive informat
 
 ## Skill Structure
 
-Each skill should be placed in a directory named for the workflow:
+Each skill should be placed under the usage directory that best matches its primary workflow:
 
 ```text
-skill-name/
-  SKILL.md
+research/
+  skill-name/
+    SKILL.md
+
+llm_wiki/
+  skill-name/
+    SKILL.md
 ```
 
 Optional support directories:
 
 ```text
-skill-name/references/
-skill-name/scripts/
-skill-name/assets/
+research/skill-name/references/
+research/skill-name/scripts/
+research/skill-name/assets/
+
+llm_wiki/skill-name/references/
+llm_wiki/skill-name/scripts/
+llm_wiki/skill-name/assets/
 ```
 
 Use these only when they materially improve maintainability or reuse.
