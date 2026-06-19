@@ -12,6 +12,17 @@ Maintain portable skills that can be installed into:
 
 Research skills support implementations, experiments, reproductions, baselines, and related engineering workflows. LLM Wiki skills support second-brain workflows, knowledge capture, documentation, synthesis, and personal wiki maintenance.
 
+## Public Repository Privacy
+
+This is a public repository. Do not add personal, private, or sensitive information to tracked files.
+
+- Do not commit real names, private usernames, email addresses, phone numbers, addresses, account IDs, API keys, tokens, credentials, private URLs, internal hostnames, or unpublished research data.
+- Do not include private LLM Wiki notes, second-brain content, conversation exports, personal journal entries, or copied private documents.
+- Use placeholders in examples, such as `{user_name}`, `{project_name}`, `{repo_url}`, `{api_key}`, and `{private_path}`.
+- Keep environment-specific paths generic unless the path is a documented Codex convention, such as `/root/.codex/skills/` or `/Users/{user_name}/.codex/skills/`.
+- Before committing, review new and changed files for secrets, identifying details, and private knowledge-base content.
+- If sensitive information is accidentally committed, stop and ask the user how they want to rotate secrets and rewrite history.
+
 ## Working Rules
 
 - Do not assume a skill is only for one environment unless its `SKILL.md` says so.

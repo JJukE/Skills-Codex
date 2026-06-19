@@ -1,0 +1,51 @@
+# Local Codex state
+.codex/
+.agents/
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# Personal notes and private drafts
+private/
+personal/
+notes-private/
+*.private.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor and IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Caches and generated files
+.cache/
+.pytest_cache/
+__pycache__/
+*.py[cod]
+node_modules/
+dist/
+build/
+coverage/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
