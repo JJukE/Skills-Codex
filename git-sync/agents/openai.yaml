@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Sync"
+  short_description: "Pull, commit, and push using the repository commit convention."
+  default_prompt: "Pull, commit, and push the current repository changes according to COMMIT_CONVENTION.md."
