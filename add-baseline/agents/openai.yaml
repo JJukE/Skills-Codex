@@ -1,0 +1,4 @@
+interface:
+  display_name: "Add Baseline"
+  short_description: "Find paper links, update README, and clone"
+  default_prompt: "Use $add-baseline to find official links for a paper PDF and optionally update README.md and clone its repository."
