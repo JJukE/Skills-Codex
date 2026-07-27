@@ -25,6 +25,30 @@ mkdir -p .agents/skills
 cp -R /path/to/Skills-Codex/research/* .agents/skills/
 ```
 
+### Document Session
+
+`research/document-session` is the canonical source for the portable research
+worklog skill. Prefer a repository-local install when the skill should follow a
+research codebase's own instructions and artifact conventions:
+
+```bash
+mkdir -p .agents/skills
+cp -R /path/to/Skills-Codex/research/document-session .agents/skills/
+```
+
+For the same canonical behavior across multiple repositories, install it at the
+device level instead:
+
+```bash
+cp -R research/document-session /root/.codex/skills/
+cp -R research/document-session /Users/{user_name}/.codex/skills/
+```
+
+Use the path for the active environment, not both. To update an installation,
+review local differences, preserve any intentional local instructions, and
+replace the installed directory from this canonical source. The MVP does not
+require repository configuration.
+
 To install the vendored Graphify skill only:
 
 ```bash
@@ -166,6 +190,7 @@ Only `SKILL.md` is required. Add supporting folders only when the skill needs th
 Current skills:
 
 - `research/add-baseline`: find and verify baseline paper metadata and official links, then optionally update a baseline README and clone the official repository
+- `research/document-session`: maintain a portable, evidence-grounded, compact-safe research worklog without changing active experiments or source code
 - `research/graphify`: build and query persistent knowledge graphs for codebases, papers, documents, images, and research corpora
 - `research/git-sync`: pull, commit, and push repository changes using the local commit convention
 - `llm_wiki/paper-ingest`: ingest Zotero papers into an LLM Wiki and compile durable wiki pages

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Document Research Session"
+  short_description: "Capture an evidence-grounded research worklog"
+  default_prompt: "Use $document-session to checkpoint the current research task in a portable evidence-grounded worklog."
+policy:
+  allow_implicit_invocation: false

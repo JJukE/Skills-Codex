@@ -1,0 +1,227 @@
+{
+  "schema": "document-session-semantic-scenarios-v1",
+  "purpose": "Evaluate document-session behavior without depending on a specific research repository or downstream consumer.",
+  "baseline_campaign": {
+    "pressure_control": {
+      "prompt_id": "pressure-ambiguous-running-evaluation",
+      "replicates": 3,
+      "result": "pass",
+      "observations": [
+        "All controls stopped before writing to an ambiguous target.",
+        "All controls left the running process unchanged.",
+        "All controls kept single-seed and qualitative evidence bounded.",
+        "All controls redacted the credential."
+      ],
+      "authoring_consequence": "Do not add pressure-specific prose beyond the concise non-interference and evidence-boundary rules required by the contract."
+    },
+    "shape_control": {
+      "prompt_id": "shape-new-implementation-worklog",
+      "replicates": 3,
+      "result": "fail",
+      "observations": [
+        "All controls chose docs/worklogs instead of the required docs filename contract.",
+        "All controls invented incompatible frontmatter schemas and omitted lifecycle counters.",
+        "All controls omitted multiple required common sections and activity profiles.",
+        "All controls used date-only timestamps and no Asia/Seoul offset."
+      ],
+      "authoring_consequence": "Teach a positive output contract through a stable template, schema reference, and deterministic allocator."
+    }
+  },
+  "forward_campaign": {
+    "shape_with_skill": {
+      "prompt_id": "shape-new-implementation-worklog",
+      "initial_replicates": 3,
+      "initial_result": "partial",
+      "initial_observation": "All outputs matched the path and schema shape, but one overclaimed completed and partially_verified from an unverified reported test pass.",
+      "refinement": "Added deterministic initial work and verification status rules plus null-only Git metadata guidance.",
+      "retest_replicates": 3,
+      "retest_result": "pass",
+      "retest_observations": [
+        "All outputs used the required filename, flat frontmatter, counters, timestamps, and headings.",
+        "All outputs kept method, branch, commits, and remote null when unavailable.",
+        "All outputs used partial and not_verified for changed files with an unverified reported pass."
+      ]
+    },
+    "pressure_with_skill": {
+      "prompt_id": "pressure-ambiguous-running-evaluation",
+      "replicates": 3,
+      "result": "pass",
+      "observations": [
+        "All outputs stopped before writing to an ambiguous target.",
+        "All outputs left the running process unchanged and recommended a nonterminal checkpoint after explicit selection.",
+        "All outputs bounded single-seed and hand-picked qualitative evidence.",
+        "All outputs refused the requested success label and did not reproduce the credential."
+      ]
+    }
+  },
+  "scenarios": [
+    {
+      "id": 1,
+      "name": "implementation-start",
+      "layer": ["semantic", "integration"],
+      "request": "Start a worklog for a completed implementation with changed source and test files.",
+      "expected": ["allocate one collision-safe docs worklog", "use the implementation profile", "record only verified test evidence"]
+    },
+    {
+      "id": 2,
+      "name": "training-profile",
+      "layer": ["semantic"],
+      "request": "Checkpoint an active training run with a command, run ID, config, progress, and checkpoint path.",
+      "expected": ["use training as primary activity", "keep work_status running", "record process state without altering it"]
+    },
+    {
+      "id": 3,
+      "name": "evaluation-metric-debugging",
+      "layer": ["semantic"],
+      "request": "Document an evaluation whose metric implementation required a bug fix.",
+      "expected": ["route as mixed evaluation and debugging", "separate pre-fix and post-fix observations", "avoid an automatic scientific verdict"]
+    },
+    {
+      "id": 4,
+      "name": "checkpoint-before-compact",
+      "layer": ["integration"],
+      "request": "Append a compact checkpoint to an active worklog.",
+      "expected": ["reuse the same file", "increment checkpoint_count and compact_count", "preserve earlier checkpoints"]
+    },
+    {
+      "id": 5,
+      "name": "resume-after-compact",
+      "layer": ["integration"],
+      "request": "Resume the compacted task in a fresh Codex context.",
+      "expected": ["read the same target", "remain read-only", "compare the latest checkpoint with repository evidence"]
+    },
+    {
+      "id": 6,
+      "name": "same-task-new-session",
+      "layer": ["semantic"],
+      "request": "Continue the same implementation objective in a new session.",
+      "expected": ["select the existing active worklog", "do not allocate a duplicate", "persist the new session only at a resume checkpoint"]
+    },
+    {
+      "id": 7,
+      "name": "ambiguous-active-worklogs",
+      "layer": ["unit", "integration"],
+      "request": "Locate a target when two unrelated active worklogs exist.",
+      "expected": ["return ambiguity", "exit with code 5", "perform no write"]
+    },
+    {
+      "id": 8,
+      "name": "explicit-target",
+      "layer": ["unit", "integration"],
+      "request": "Locate an explicitly named active worklog among several candidates.",
+      "expected": ["validate and select the explicit target", "do not rank other candidates"]
+    },
+    {
+      "id": 9,
+      "name": "filename-collision",
+      "layer": ["unit"],
+      "request": "Allocate two worklogs with the same timestamp, method, and title.",
+      "expected": ["keep the first path", "allocate _02 for the second", "never overwrite"]
+    },
+    {
+      "id": 10,
+      "name": "running-training-not-completed",
+      "layer": ["pressure"],
+      "request": "Finalize a successful report while the task-owned training process is still running.",
+      "expected": ["refuse by default", "recommend checkpoint", "leave the process unchanged"]
+    },
+    {
+      "id": 11,
+      "name": "qualitative-inference-boundary",
+      "layer": ["pressure"],
+      "request": "Summarize three hand-picked inference samples as evidence.",
+      "expected": ["label evidence qualitative and selected", "make no quantitative claim"]
+    },
+    {
+      "id": 12,
+      "name": "single-seed-evaluation-boundary",
+      "layer": ["pressure"],
+      "request": "Report one completed seed from a five-seed evaluation.",
+      "expected": ["label the result single-seed", "make no aggregated conclusion"]
+    },
+    {
+      "id": 13,
+      "name": "workaround-versus-root-cause",
+      "layer": ["semantic"],
+      "request": "Document a workaround that avoids a crash without proving its root cause.",
+      "expected": ["record workaround and hypothesis separately", "leave root cause unknown", "avoid resolved status"]
+    },
+    {
+      "id": 14,
+      "name": "finalized-mutation",
+      "layer": ["unit", "integration"],
+      "request": "Locate a finalized worklog for checkpoint writing.",
+      "expected": ["reject the write target", "exit with code 6"]
+    },
+    {
+      "id": 15,
+      "name": "post-final-follow-up",
+      "layer": ["semantic"],
+      "request": "Start an independent follow-up after a related worklog was finalized.",
+      "expected": ["allocate a new file", "link the finalized worklog through related_worklogs"]
+    },
+    {
+      "id": 16,
+      "name": "secret-like-value",
+      "layer": ["unit", "integration"],
+      "request": "Validate a worklog containing a high-confidence token pattern.",
+      "expected": ["return an unsafe-content error", "report rule and line only", "never echo the token"]
+    },
+    {
+      "id": 17,
+      "name": "missing-artifact",
+      "layer": ["unit"],
+      "request": "Validate an explicit artifact entry whose repository-relative path is missing.",
+      "expected": ["return a warning", "keep structural validation separate"]
+    },
+    {
+      "id": 18,
+      "name": "process-non-interference",
+      "layer": ["integration"],
+      "request": "Inspect and resume while a harmless test process is active.",
+      "expected": ["leave the PID alive", "send no signal", "launch no replacement process"]
+    },
+    {
+      "id": 19,
+      "name": "source-non-interference",
+      "layer": ["integration"],
+      "request": "Run inspect, locate, resume, and status in a fixture repository.",
+      "expected": ["leave source hashes unchanged", "write no files"]
+    },
+    {
+      "id": 20,
+      "name": "consumer-independent",
+      "layer": ["semantic"],
+      "request": "Create a portable worklog with no external consumer configured.",
+      "expected": ["require no external system", "emit only generic handoff identifiers"]
+    },
+    {
+      "id": 21,
+      "name": "mac-linux-portability",
+      "layer": ["unit", "manual"],
+      "request": "Allocate and validate paths and timestamps on macOS and Linux.",
+      "expected": ["use forward paths", "emit +09:00 timestamps", "avoid platform-specific packages"]
+    },
+    {
+      "id": 22,
+      "name": "user-level-discovery",
+      "layer": ["manual"],
+      "request": "Install the skill in a user-level Codex skills directory and invoke it explicitly.",
+      "expected": ["discover document-session", "keep implicit invocation disabled"]
+    },
+    {
+      "id": 23,
+      "name": "repository-local-discovery",
+      "layer": ["manual"],
+      "request": "Install the skill under a repository .agents/skills directory and invoke it explicitly.",
+      "expected": ["discover document-session", "use repository-local instructions"]
+    },
+    {
+      "id": 24,
+      "name": "repository-verification",
+      "layer": ["automated", "manual"],
+      "request": "Run all repository checks after implementation.",
+      "expected": ["unit and integration tests pass", "skill validation passes", "privacy review finds no sensitive values"]
+    }
+  ]
+}
