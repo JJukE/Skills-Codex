@@ -32,7 +32,7 @@ assume or contact any external knowledge system.
 | `checkpoint` | Updates the mutable worklog state and appends an evidence-grounded checkpoint. Use it before compact or at meaningful progress boundaries. | `$document-session checkpoint --event compact` |
 | `resume` | Reads an existing worklog and reports what changed, the blocker, and the next action without editing it. | `$document-session resume` |
 | `status` | Reports the current worklog status, validation result, and missing evidence without editing it. | `$document-session status` |
-| `handoff` | Creates a new immutable point-in-time snapshot without finalizing the active worklog. Use it for progress, day-close, failure, or other downstream transfer. | `$document-session handoff --event day-close` |
+| `handoff` | Reads the current active or finalized worklog and creates a new immutable snapshot without modifying the source worklog. | `$document-session handoff` |
 | `finalize` | Adds a supported terminal checkpoint, reconciles the worklog, and makes it immutable. | `$document-session finalize --event completion` |
 
 A common multi-session workflow is:
@@ -42,19 +42,27 @@ $document-session start --title "Train {method}" --activity training
 $document-session checkpoint --event compact
 $document-session resume
 $document-session checkpoint --event progress
-$document-session handoff --event day-close
+$document-session handoff
 ```
 
 The three persistence operations have different roles:
 
 - `checkpoint` updates the active mutable worklog for compact-safe continuation;
-- `handoff` creates a separate immutable snapshot while the task may still be running;
+- `handoff` automatically captures the current evidence and creates a separate immutable snapshot while the task may still be running;
 - `finalize` closes and locks the active worklog when a terminal state is supported by evidence.
+
+Use an explicit target only when worklog selection is ambiguous:
+
+```text
+$document-session handoff --target docs/YYMMDD_HHMM_method_title.md
+```
 
 A handoff must remain portable and consumer-neutral. It may expose generic
 research entities, runs, findings, decisions, failures, artifacts, evidence
 boundaries, and next actions, but it must not name or require a particular Wiki,
-database, document processor, or ingest skill.
+database, document processor, or ingest skill. The capture timestamp and the
+observed work, activity, verification, and process states identify the snapshot;
+users do not need to supply a separate event or label.
 
 ## Git Sync
 
@@ -87,6 +95,6 @@ watch, MCP, Neo4j, and other advanced options.
 
 - `add-baseline` defaults to search-only until you confirm the links and request the README update or clone.
 - `document-session` must be invoked explicitly. Its lifecycle commands are `start`, `checkpoint`, `resume`, `status`, `handoff`, and `finalize`.
-- `document-session handoff` is allowed before finalization and creates a separate immutable snapshot; it must not modify or control active research processes.
+- `document-session handoff` takes no event or label. It may run before finalization, creates a separate immutable snapshot, and must not modify the source worklog or active research processes.
 - `git-sync` requires a configured remote, a current branch, and a repository-root `COMMIT_CONVENTION.md`.
 - `graphify` requires the Graphify runtime; PDF support and multi-agent setup are documented in the [Graphify installation notes](../README.md#graphify).
