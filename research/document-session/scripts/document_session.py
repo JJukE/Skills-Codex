@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""Inspect, locate, allocate, and validate portable research worklogs."""
+"""Inspect, locate, allocate, snapshot, and validate research documentation."""
 
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +25,8 @@ except ImportError:  # pragma: no cover - Python 3.9+ provides zoneinfo
 
 
 SCHEMA = "research-session-worklog-v1"
+HANDOFF_SCHEMA = "research-session-handoff-v1"
+HANDOFF_CANONICALIZATION_VERSION = 1
 METHOD_SLUG_MAX_BYTES = 48
 TITLE_SLUG_MAX_BYTES = 96
 ACTIVE_DOCUMENTATION_STATUSES = {"in_progress", "checkpointed"}
@@ -94,6 +99,48 @@ REQUIRED_KEYS = [
     "related_worklogs",
     "tags",
 ]
+HANDOFF_REQUIRED_KEYS = [
+    "schema",
+    "handoff_id",
+    "captured_at",
+    "timezone",
+    "source_worklog_id",
+    "source_worklog_path",
+    "source_worklog_sha256",
+    "project",
+    "method",
+    "title",
+    "primary_activity",
+    "activity_types",
+    "documentation_status_at_capture",
+    "work_status_at_capture",
+    "verification_status_at_capture",
+    "active_process_state",
+    "verification_evidence",
+    "repository",
+    "branch",
+    "commit_at_capture",
+    "coverage",
+    "snapshot_sha256",
+]
+HANDOFF_SEALED_KEYS = [
+    key for key in HANDOFF_REQUIRED_KEYS if key != "snapshot_sha256"
+]
+HANDOFF_HEADINGS = [
+    "## Current Scope and State",
+    "## Implementation Changes",
+    "## Experiment and Run Evidence",
+    "## Observed Results",
+    "## Decisions",
+    "## Failures and Anomalies",
+    "## Artifacts",
+    "## Reproducibility Constraints",
+    "## Uncertainty and Evidence Boundaries",
+    "## Next Actions",
+    "## Coverage Limitations",
+]
+ACTIVE_PROCESS_STATES = {"none", "running", "completed", "failed", "unknown"}
+HANDOFF_COVERAGE = {"complete", "partial"}
 COMMON_HEADINGS = [
     "## Executive Summary",
     "## Original Request",
@@ -409,9 +456,12 @@ def _json_yaml(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
 
 
-def render_frontmatter(metadata: dict[str, Any]) -> str:
+def render_frontmatter(
+    metadata: dict[str, Any],
+    keys: Optional[list[str]] = None,
+) -> str:
     lines = ["---"]
-    for key in REQUIRED_KEYS:
+    for key in keys or REQUIRED_KEYS:
         lines.append(f"{key}: {_json_yaml(metadata[key])}")
     lines.append("---")
     return "\n".join(lines)
@@ -1382,6 +1432,942 @@ def validate_worklog(path: Path, repo_root: Path) -> dict[str, Any]:
     }
 
 
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def _normalize_handoff_body(body: str) -> str:
+    normalized = body.replace("\r\n", "\n").replace("\r", "\n").lstrip("\n")
+    if not normalized.strip():
+        raise DocumentSessionError(
+            "handoff body is required",
+            code="handoff.body",
+        )
+    if normalized.startswith("---\n") or normalized == "---":
+        raise DocumentSessionError(
+            "handoff body must not contain frontmatter",
+            code="handoff.body",
+        )
+    unresolved = sorted(set(re.findall(r"\{\{[A-Z0-9_]+\}\}", normalized)))
+    if unresolved:
+        raise DocumentSessionError(
+            "handoff body contains unresolved template markers",
+            code="handoff.body",
+            details={"markers": unresolved},
+        )
+    return normalized.rstrip("\n") + "\n"
+
+
+def _handoff_body_issues(body: str, title: Any) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    expected_title = (
+        f"{title} - Research Handoff" if isinstance(title, str) else None
+    )
+    title_matches = list(TOP_LEVEL_TITLE_RE.finditer(body))
+    if (
+        expected_title is None
+        or len(title_matches) != 1
+        or title_matches[0].group("title") != expected_title
+    ):
+        issues.append(
+            _issue(
+                "handoff.heading-title",
+                "handoff requires one source-derived top-level title",
+            )
+        )
+
+    positions: list[int] = []
+    for heading in HANDOFF_HEADINGS:
+        matches = list(re.finditer(rf"^{re.escape(heading)}\s*$", body, re.MULTILINE))
+        if len(matches) != 1:
+            issues.append(
+                _issue(
+                    "handoff.heading-count",
+                    f"{heading} must appear exactly once",
+                )
+            )
+            continue
+        positions.append(matches[0].start())
+        section = _section_text(body, heading).strip()
+        if not section:
+            issues.append(
+                _issue("handoff.section-empty", f"{heading} must not be empty")
+            )
+        elif not re.search(
+            r"\[(?:observed|interpretation|decision|unknown)\]",
+            section,
+        ):
+            issues.append(
+                _issue(
+                    "handoff.evidence-tag",
+                    f"{heading} requires an evidence classification tag",
+                )
+            )
+    if len(positions) == len(HANDOFF_HEADINGS) and positions != sorted(positions):
+        issues.append(
+            _issue("handoff.heading-order", "handoff headings are out of order")
+        )
+    if title_matches and positions and title_matches[0].start() > positions[0]:
+        issues.append(
+            _issue(
+                "handoff.heading-title",
+                "handoff title must precede the required sections",
+            )
+        )
+    return issues
+
+
+def _canonical_handoff_snapshot(
+    metadata: dict[str, Any],
+    body: str,
+) -> tuple[str, str]:
+    normalized_body = _normalize_handoff_body(body)
+    canonical = (
+        render_frontmatter(metadata, HANDOFF_SEALED_KEYS)
+        + "\n\n"
+        + normalized_body
+    )
+    return _sha256_bytes(canonical.encode("utf-8")), normalized_body
+
+
+def _render_handoff(
+    metadata: dict[str, Any],
+    body: str,
+) -> tuple[dict[str, Any], str, str]:
+    sealed = dict(metadata)
+    snapshot_sha256, normalized_body = _canonical_handoff_snapshot(sealed, body)
+    sealed["snapshot_sha256"] = snapshot_sha256
+    markdown = (
+        render_frontmatter(sealed, HANDOFF_REQUIRED_KEYS)
+        + "\n\n"
+        + normalized_body
+    )
+    return sealed, normalized_body, markdown
+
+
+def _encode_allocation_token(payload: dict[str, Any]) -> str:
+    raw = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    return f"{encoded}.{_sha256_bytes(raw)}"
+
+
+def _decode_allocation_token(token: str) -> dict[str, Any]:
+    try:
+        encoded, digest = token.split(".", 1)
+    except ValueError as exc:
+        raise DocumentSessionError(
+            "invalid handoff allocation token",
+            code="handoff.allocation-token",
+        ) from exc
+    if (
+        not re.fullmatch(r"[A-Za-z0-9_-]+", encoded)
+        or not re.fullmatch(r"[0-9a-f]{64}", digest)
+    ):
+        raise DocumentSessionError(
+            "invalid handoff allocation token",
+            code="handoff.allocation-token",
+        )
+    try:
+        padding = "=" * (-len(encoded) % 4)
+        raw = base64.urlsafe_b64decode((encoded + padding).encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DocumentSessionError(
+            "invalid handoff allocation token",
+            code="handoff.allocation-token",
+        ) from exc
+    if _sha256_bytes(raw) != digest or not isinstance(payload, dict):
+        raise DocumentSessionError(
+            "invalid handoff allocation token",
+            code="handoff.allocation-token",
+        )
+    if payload.get("version") != HANDOFF_CANONICALIZATION_VERSION:
+        raise DocumentSessionError(
+            "unsupported handoff allocation token version",
+            code="handoff.allocation-token",
+        )
+    return payload
+
+
+def _handoff_relative_path(root: Path, raw_value: Any) -> Path:
+    if not isinstance(raw_value, str):
+        raise DocumentSessionError(
+            "handoff allocation path is invalid",
+            code="handoff.allocation-token",
+        )
+    raw = Path(raw_value)
+    if (
+        raw.is_absolute()
+        or raw.parent != Path("docs/handoffs")
+        or ".." in raw.parts
+        or "\\" in raw_value
+    ):
+        raise DocumentSessionError(
+            "handoff allocation path is unsafe",
+            code="handoff.allocation-token",
+        )
+    candidate = root / raw
+    if not _is_within(candidate.resolve(strict=False), root):
+        raise DocumentSessionError(
+            "handoff allocation path is unsafe",
+            code="handoff.allocation-token",
+        )
+    return raw
+
+
+def _handoff_directory(root: Path, create: bool) -> Path:
+    handoffs = root / "docs" / "handoffs"
+    if handoffs.exists():
+        try:
+            resolved = handoffs.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise DocumentSessionError(
+                "handoff directory is unavailable",
+                code="handoff.allocation-write",
+            ) from exc
+        if handoffs.is_symlink() or not handoffs.is_dir() or not _is_within(
+            resolved, root
+        ):
+            raise DocumentSessionError(
+                "handoff directory must be a real directory inside the repository",
+                code="handoff.allocation-write",
+            )
+    elif create:
+        try:
+            handoffs.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            return _handoff_directory(root, create=False)
+        except OSError as exc:
+            raise DocumentSessionError(
+                "unable to create the handoff directory",
+                code="handoff.allocation-write",
+            ) from exc
+    return handoffs
+
+
+def _handoff_prefix(
+    captured_at: datetime,
+    method: Any,
+    title: Any,
+) -> str:
+    if not isinstance(title, str) or not title.strip():
+        raise DocumentSessionError(
+            "source worklog title is invalid",
+            code="handoff.source-invalid",
+        )
+    method_slug = "unspecified-method"
+    if isinstance(method, str) and method.strip():
+        method_slug = bounded_slug(
+            normalize_slug(method.strip()), METHOD_SLUG_MAX_BYTES
+        )
+    title_slug = bounded_slug(normalize_slug(title.strip()), TITLE_SLUG_MAX_BYTES)
+    return (
+        f"{captured_at.strftime('%y%m%d_%H%M')}_{method_slug}_{title_slug}"
+    )
+
+
+def _validate_handoff_capture_inputs(
+    source_metadata: dict[str, Any],
+    work_status: str,
+    verification_status: str,
+    documentation_status: str,
+    coverage: str,
+    active_process_state: str,
+    verification_evidence: list[str],
+) -> None:
+    if work_status not in WORK_STATUSES:
+        raise DocumentSessionError(
+            "invalid work status at capture",
+            code="handoff.status",
+        )
+    if verification_status not in VERIFICATION_STATUSES:
+        raise DocumentSessionError(
+            "invalid verification status at capture",
+            code="handoff.status",
+        )
+    if documentation_status not in DOCUMENTATION_STATUSES:
+        raise DocumentSessionError(
+            "invalid documentation status at capture",
+            code="handoff.status",
+        )
+    if documentation_status != source_metadata.get("documentation_status"):
+        raise DocumentSessionError(
+            "documentation status must match the source worklog",
+            code="handoff.status-contradiction",
+        )
+    if coverage not in HANDOFF_COVERAGE:
+        raise DocumentSessionError(
+            "invalid evidence coverage",
+            code="handoff.coverage",
+        )
+    if active_process_state not in ACTIVE_PROCESS_STATES:
+        raise DocumentSessionError(
+            "invalid active process state",
+            code="handoff.status",
+        )
+    if active_process_state == "running" and work_status in {
+        "completed",
+        "aborted",
+    }:
+        raise DocumentSessionError(
+            "a running process cannot be captured as completed or aborted",
+            code="handoff.status-contradiction",
+        )
+    if any(
+        not isinstance(item, str) or not item.strip()
+        for item in verification_evidence
+    ):
+        raise DocumentSessionError(
+            "verification evidence values must be non-empty strings",
+            code="handoff.verification-evidence",
+        )
+    if verification_status == "verified" and not verification_evidence:
+        raise DocumentSessionError(
+            "verified handoffs require explicit verification evidence",
+            code="handoff.verification-evidence",
+        )
+
+
+def _handoff_source(
+    root: Path,
+    source_worklog: str,
+) -> tuple[Path, dict[str, Any], bytes]:
+    selected = resolve_target(root, source_worklog, None, for_write=False)
+    source = Path(selected["path"])
+    validation = validate_worklog(source, root)
+    if not validation["valid"]:
+        secret = any(
+            item["code"].startswith("secret.") for item in validation["errors"]
+        )
+        raise DocumentSessionError(
+            "source worklog is not valid for handoff capture",
+            exit_code=8 if secret else 3,
+            code="secret.detected" if secret else "handoff.source-invalid",
+            details={
+                "issues": [
+                    item["code"] for item in validation["errors"]
+                ]
+            },
+        )
+    try:
+        source_bytes = source.read_bytes()
+        source_metadata, _ = parse_frontmatter(source_bytes.decode("utf-8"))
+    except (OSError, UnicodeError, DocumentSessionError) as exc:
+        raise DocumentSessionError(
+            "source worklog is unavailable",
+            code="handoff.source-invalid",
+        ) from exc
+    return source, source_metadata, source_bytes
+
+
+def _allocation_payload(
+    relative_path: Path,
+    metadata: dict[str, Any],
+    body: str,
+    markdown: str,
+) -> dict[str, Any]:
+    return {
+        "version": HANDOFF_CANONICALIZATION_VERSION,
+        "captured_at": metadata["captured_at"],
+        "path": relative_path.as_posix(),
+        "source_worklog_id": metadata["source_worklog_id"],
+        "source_worklog_path": metadata["source_worklog_path"],
+        "source_worklog_sha256": metadata["source_worklog_sha256"],
+        "body_sha256": _sha256_bytes(body.encode("utf-8")),
+        "snapshot_sha256": metadata["snapshot_sha256"],
+        "markdown_sha256": _sha256_bytes(markdown.encode("utf-8")),
+    }
+
+
+def allocate_handoff(
+    repo_root: Path,
+    source_worklog: str,
+    body: str,
+    *,
+    captured_at: Optional[datetime],
+    work_status: str,
+    verification_status: str,
+    documentation_status: str,
+    coverage: str,
+    active_process_state: str,
+    verification_evidence: list[str],
+    create: bool,
+    allocation_token: Optional[str],
+) -> dict[str, Any]:
+    root = repository_root(repo_root)
+    if create and captured_at is None:
+        raise DocumentSessionError(
+            "create requires the preview captured-at timestamp",
+            code="handoff.allocation-token",
+        )
+    if create and not allocation_token:
+        raise DocumentSessionError(
+            "create requires an allocation token from preview",
+            code="handoff.allocation-token",
+        )
+    if not create and allocation_token:
+        raise DocumentSessionError(
+            "allocation token is only accepted with create",
+            code="handoff.allocation-token",
+        )
+
+    normalized_body = _normalize_handoff_body(body)
+    source, source_metadata, source_bytes = _handoff_source(root, source_worklog)
+    _validate_handoff_capture_inputs(
+        source_metadata,
+        work_status,
+        verification_status,
+        documentation_status,
+        coverage,
+        active_process_state,
+        verification_evidence,
+    )
+    captured = seoul_now(captured_at)
+    captured_text = captured.isoformat(timespec="seconds")
+    inspection = inspect_repository(root, captured)
+    handoffs = _handoff_directory(root, create=False)
+    prefix = _handoff_prefix(
+        captured,
+        source_metadata.get("method"),
+        source_metadata.get("title"),
+    )
+
+    token_payload: Optional[dict[str, Any]] = None
+    if create:
+        token_payload = _decode_allocation_token(str(allocation_token))
+        relative_path = _handoff_relative_path(root, token_payload.get("path"))
+    else:
+        index = 1
+        while True:
+            suffix = "" if index == 1 else f"_{index:02d}"
+            relative_path = Path("docs/handoffs") / f"{prefix}{suffix}.md"
+            if not (root / relative_path).exists():
+                break
+            index += 1
+
+    if not re.fullmatch(
+        rf"{re.escape(prefix)}(?:_(?:0[2-9]|[1-9][0-9]+))?\.md",
+        relative_path.name,
+    ):
+        raise DocumentSessionError(
+            "handoff allocation path does not match the captured identity",
+            code="handoff.allocation-drift",
+        )
+
+    source_relative = source.relative_to(root).as_posix()
+    metadata = {
+        "schema": HANDOFF_SCHEMA,
+        "handoff_id": relative_path.stem,
+        "captured_at": captured_text,
+        "timezone": "Asia/Seoul",
+        "source_worklog_id": source_metadata["worklog_id"],
+        "source_worklog_path": source_relative,
+        "source_worklog_sha256": _sha256_bytes(source_bytes),
+        "project": source_metadata["project"],
+        "method": source_metadata["method"],
+        "title": source_metadata["title"],
+        "primary_activity": source_metadata["primary_activity"],
+        "activity_types": source_metadata["activity_types"],
+        "documentation_status_at_capture": documentation_status,
+        "work_status_at_capture": work_status,
+        "verification_status_at_capture": verification_status,
+        "active_process_state": active_process_state,
+        "verification_evidence": list(dict.fromkeys(verification_evidence)),
+        "repository": inspection["repository"],
+        "branch": inspection["branch"],
+        "commit_at_capture": inspection["head"],
+        "coverage": coverage,
+    }
+    body_issues = _handoff_body_issues(normalized_body, metadata["title"])
+    if body_issues:
+        raise DocumentSessionError(
+            "handoff body does not match the required schema",
+            code="handoff.body",
+            details={"issues": [item["code"] for item in body_issues]},
+        )
+    secret_issues = _secret_issues(
+        normalized_body
+        + "\n"
+        + "\n".join(metadata["verification_evidence"])
+    )
+    if secret_issues:
+        raise DocumentSessionError(
+            "secret-like content detected before handoff allocation",
+            exit_code=8,
+            code="secret.detected",
+            details={"issues": secret_issues},
+        )
+
+    sealed, canonical_body, markdown = _render_handoff(metadata, normalized_body)
+    expected_payload = _allocation_payload(
+        relative_path, sealed, canonical_body, markdown
+    )
+    token = _encode_allocation_token(expected_payload)
+    if create and token_payload != expected_payload:
+        raise DocumentSessionError(
+            "handoff inputs changed after preview",
+            code="handoff.allocation-drift",
+        )
+
+    result = {
+        "path": relative_path.as_posix(),
+        "frontmatter": sealed,
+        "body": canonical_body,
+        "snapshot_sha256": sealed["snapshot_sha256"],
+        "markdown": markdown,
+        "captured_at": captured_text,
+        "allocation_token": token,
+        "created": False,
+    }
+    if not create:
+        return result
+
+    handoffs = _handoff_directory(root, create=True)
+    target = root / relative_path
+    if target.exists():
+        raise DocumentSessionError(
+            "the previewed handoff path is no longer available",
+            code="handoff.allocation-conflict",
+        )
+
+    temp_path: Optional[Path] = None
+    published = False
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{target.stem}.",
+            suffix=".tmp",
+            dir=handoffs,
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            handle.write(markdown)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temp_path, target)
+        except FileExistsError as exc:
+            raise DocumentSessionError(
+                "the previewed handoff path is no longer available",
+                code="handoff.allocation-conflict",
+            ) from exc
+        published = True
+        if _sha256_bytes(source.read_bytes()) != sealed["source_worklog_sha256"]:
+            raise DocumentSessionError(
+                "source worklog changed during handoff publication",
+                code="handoff.allocation-drift",
+            )
+        validation = validate_handoff(target, root)
+        if not validation["valid"]:
+            raise DocumentSessionError(
+                "created handoff failed immutable validation",
+                code="handoff.self-validation",
+                details={
+                    "issues": [
+                        item["code"] for item in validation["errors"]
+                    ]
+                },
+            )
+    except DocumentSessionError:
+        if published:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        raise
+    except OSError as exc:
+        if published:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+        raise DocumentSessionError(
+            "unable to publish the handoff",
+            code="handoff.allocation-write",
+        ) from exc
+    finally:
+        if temp_path is not None:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+    result["created"] = True
+    return result
+
+
+def validate_handoff(path: Path, repo_root: Path) -> dict[str, Any]:
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    root = repository_root(repo_root)
+    raw_path = path.expanduser()
+    candidate = raw_path if raw_path.is_absolute() else root / raw_path
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return {
+            "valid": False,
+            "errors": [_issue("path.missing", "handoff path does not exist")],
+            "warnings": [],
+        }
+    if not _is_within(resolved, root):
+        return {
+            "valid": False,
+            "errors": [_issue("path.unsafe", "handoff is outside the repository")],
+            "warnings": [],
+        }
+    if not resolved.is_file():
+        return {
+            "valid": False,
+            "errors": [_issue("path.unsafe", "handoff must be a regular file")],
+            "warnings": [],
+        }
+    try:
+        text = resolved.read_text(encoding="utf-8")
+        metadata, parsed_body = parse_frontmatter(text)
+        body = _normalize_handoff_body(parsed_body)
+    except (OSError, UnicodeError, DocumentSessionError) as exc:
+        return {
+            "valid": False,
+            "errors": [_issue("frontmatter.invalid", str(exc))],
+            "warnings": [],
+        }
+
+    for key in HANDOFF_REQUIRED_KEYS:
+        if key not in metadata:
+            code = (
+                "handoff.immutable-modified"
+                if key == "snapshot_sha256"
+                else "frontmatter.required"
+            )
+            errors.append(_issue(code, f"missing field: {key}"))
+    for key in metadata:
+        if key not in HANDOFF_REQUIRED_KEYS:
+            errors.append(
+                _issue("frontmatter.unknown", f"unsupported field: {key}")
+            )
+
+    if metadata.get("schema") != HANDOFF_SCHEMA:
+        errors.append(
+            _issue("schema.unsupported", "unsupported handoff schema")
+        )
+
+    required_strings = (
+        "schema",
+        "handoff_id",
+        "captured_at",
+        "timezone",
+        "source_worklog_id",
+        "source_worklog_path",
+        "source_worklog_sha256",
+        "project",
+        "title",
+        "primary_activity",
+        "documentation_status_at_capture",
+        "work_status_at_capture",
+        "verification_status_at_capture",
+        "active_process_state",
+        "repository",
+        "coverage",
+    )
+    for key in required_strings:
+        if key in metadata and not isinstance(metadata[key], str):
+            errors.append(_issue("frontmatter.type", f"{key} must be a string"))
+    for key in ("method", "branch", "commit_at_capture"):
+        if key in metadata and metadata[key] is not None and not isinstance(
+            metadata[key], str
+        ):
+            errors.append(
+                _issue("frontmatter.type", f"{key} must be a string or null")
+            )
+    for key in ("activity_types", "verification_evidence"):
+        value = metadata.get(key)
+        if key in metadata and (
+            not isinstance(value, list)
+            or any(not isinstance(item, str) or not item for item in value)
+        ):
+            errors.append(
+                _issue(
+                    "frontmatter.list",
+                    f"{key} must be a list of non-empty strings",
+                )
+            )
+
+    if metadata.get("timezone") != "Asia/Seoul":
+        errors.append(_issue("timezone.invalid", "timezone must be Asia/Seoul"))
+    captured = _parse_timestamp(
+        metadata.get("captured_at"), "captured_at", errors
+    )
+    if captured is not None and captured.utcoffset() != timedelta(hours=9):
+        errors.append(
+            _issue("timestamp.seoul", "captured_at must use +09:00")
+        )
+
+    enum_checks = (
+        ("primary_activity", ACTIVITIES),
+        ("documentation_status_at_capture", DOCUMENTATION_STATUSES),
+        ("work_status_at_capture", WORK_STATUSES),
+        ("verification_status_at_capture", VERIFICATION_STATUSES),
+        ("active_process_state", ACTIVE_PROCESS_STATES),
+        ("coverage", HANDOFF_COVERAGE),
+    )
+    for key, allowed in enum_checks:
+        value = metadata.get(key)
+        if not isinstance(value, str) or value not in allowed:
+            errors.append(_issue("enum.invalid", f"invalid {key}"))
+
+    activity_types = metadata.get("activity_types")
+    activity_types_valid = (
+        isinstance(activity_types, list)
+        and bool(activity_types)
+        and all(
+            isinstance(item, str) and item in CONCRETE_ACTIVITIES
+            for item in activity_types
+        )
+    )
+    if not activity_types_valid:
+        errors.append(
+            _issue(
+                "activity.types",
+                "activity_types must contain concrete activity values",
+            )
+        )
+    elif metadata.get("primary_activity") == "mixed":
+        if len(set(activity_types)) < 2:
+            errors.append(
+                _issue("activity.mixed", "mixed activity requires at least two types")
+            )
+    elif (
+        isinstance(metadata.get("primary_activity"), str)
+        and metadata.get("primary_activity") not in activity_types
+    ):
+        errors.append(
+            _issue(
+                "activity.primary",
+                "primary_activity must appear in activity_types",
+            )
+        )
+
+    verification_evidence = metadata.get("verification_evidence")
+    if (
+        metadata.get("verification_status_at_capture") == "verified"
+        and isinstance(verification_evidence, list)
+        and not verification_evidence
+    ):
+        errors.append(
+            _issue(
+                "handoff.verification-evidence",
+                "verified handoffs require explicit verification evidence",
+            )
+        )
+    if (
+        metadata.get("active_process_state") == "running"
+        and metadata.get("work_status_at_capture") in {"completed", "aborted"}
+    ):
+        errors.append(
+            _issue(
+                "handoff.status-contradiction",
+                "a running process cannot be captured as completed or aborted",
+            )
+        )
+
+    expected_parent = (root / "docs" / "handoffs").resolve(strict=False)
+    if resolved.parent != expected_parent:
+        errors.append(
+            _issue(
+                "path.location",
+                "handoff must be directly inside docs/handoffs",
+            )
+        )
+    handoff_id = metadata.get("handoff_id")
+    if handoff_id != resolved.stem:
+        errors.append(
+            _issue("identity.filename", "handoff_id must equal the filename stem")
+        )
+    filename_match = re.fullmatch(
+        r"(?P<stamp>\d{6}_\d{4})_"
+        r"(?P<method>[^_]+)_(?P<title>[^_]+?)"
+        r"(?:_(?P<suffix>0[2-9]|[1-9][0-9]+))?",
+        resolved.stem,
+    )
+    filename_valid = filename_match is not None
+    if filename_match is not None:
+        suffix = filename_match.group("suffix")
+        if suffix is not None and int(suffix) < 2:
+            filename_valid = False
+        try:
+            expected_method = (
+                bounded_slug(
+                    normalize_slug(metadata["method"]),
+                    METHOD_SLUG_MAX_BYTES,
+                )
+                if isinstance(metadata.get("method"), str)
+                and metadata["method"].strip()
+                else "unspecified-method"
+            )
+            expected_title = (
+                bounded_slug(
+                    normalize_slug(metadata["title"]),
+                    TITLE_SLUG_MAX_BYTES,
+                )
+                if isinstance(metadata.get("title"), str)
+                and metadata["title"].strip()
+                else None
+            )
+        except ValueError:
+            expected_method = None
+            expected_title = None
+        filename_valid = bool(
+            filename_valid
+            and filename_match.group("method") == expected_method
+            and filename_match.group("title") == expected_title
+        )
+        if (
+            captured is not None
+            and filename_match.group("stamp")
+            != captured.strftime("%y%m%d_%H%M")
+        ):
+            filename_valid = False
+    if not filename_valid:
+        errors.append(
+            _issue(
+                "filename.invalid",
+                "filename does not match the handoff contract",
+            )
+        )
+
+    errors.extend(_handoff_body_issues(body, metadata.get("title")))
+    errors.extend(_secret_issues(text))
+
+    source_hash = metadata.get("source_worklog_sha256")
+    if not isinstance(source_hash, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", source_hash if isinstance(source_hash, str) else ""
+    ):
+        errors.append(
+            _issue(
+                "source.hash",
+                "source_worklog_sha256 must be lowercase SHA-256",
+            )
+        )
+    source_value = metadata.get("source_worklog_path")
+    source_path_valid = isinstance(source_value, str)
+    source_relative = Path(source_value) if source_path_valid else Path(".")
+    if (
+        not source_path_valid
+        or source_relative.is_absolute()
+        or source_relative.parent != Path("docs")
+        or ".." in source_relative.parts
+        or "\\" in str(source_value)
+    ):
+        errors.append(
+            _issue(
+                "source.path",
+                "source_worklog_path must identify a direct docs worklog",
+            )
+        )
+        source_path_valid = False
+    if source_path_valid:
+        source_candidate = root / source_relative
+        try:
+            source_resolved = source_candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            warnings.append(
+                _issue(
+                    "source.missing",
+                    "source worklog is unavailable; snapshot remains portable",
+                )
+            )
+        else:
+            if not _is_within(source_resolved, root) or not source_resolved.is_file():
+                errors.append(
+                    _issue(
+                        "source.path",
+                        "source worklog resolves outside the repository",
+                    )
+                )
+            else:
+                try:
+                    source_bytes = source_resolved.read_bytes()
+                    source_metadata, _ = parse_frontmatter(
+                        source_bytes.decode("utf-8")
+                    )
+                except (OSError, UnicodeError, DocumentSessionError):
+                    errors.append(
+                        _issue(
+                            "source.identity",
+                            "existing source worklog identity is unreadable",
+                        )
+                    )
+                else:
+                    if (
+                        source_metadata.get("schema") != SCHEMA
+                        or source_metadata.get("worklog_id")
+                        != metadata.get("source_worklog_id")
+                        or source_metadata.get("worklog_id")
+                        != source_resolved.stem
+                    ):
+                        errors.append(
+                            _issue(
+                                "source.identity",
+                                "existing source worklog identity is inconsistent",
+                            )
+                        )
+                    elif (
+                        isinstance(source_hash, str)
+                        and _sha256_bytes(source_bytes) != source_hash
+                    ):
+                        warnings.append(
+                            _issue(
+                                "source.changed",
+                                "source worklog changed after capture",
+                            )
+                        )
+
+    snapshot = metadata.get("snapshot_sha256")
+    if not isinstance(snapshot, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", snapshot if isinstance(snapshot, str) else ""
+    ):
+        if not any(
+            item["code"] == "handoff.immutable-modified" for item in errors
+        ):
+            errors.append(
+                _issue(
+                    "handoff.immutable-modified",
+                    "snapshot_sha256 must be 64 lowercase hexadecimal characters",
+                )
+            )
+    elif all(key in metadata for key in HANDOFF_SEALED_KEYS):
+        try:
+            expected_snapshot, _ = _canonical_handoff_snapshot(metadata, body)
+        except (DocumentSessionError, KeyError):
+            expected_snapshot = None
+        if expected_snapshot != snapshot:
+            errors.append(
+                _issue(
+                    "handoff.immutable-modified",
+                    "handoff content no longer matches its immutable snapshot seal",
+                )
+            )
+
+    return {
+        "valid": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "path": str(resolved),
+        "handoff_id": metadata.get("handoff_id"),
+        "snapshot_sha256": metadata.get("snapshot_sha256"),
+    }
+
+
 def _success(command: str, data: dict[str, Any], warnings=None) -> None:
     print(
         json.dumps(
@@ -1420,11 +2406,9 @@ def _argument_timestamp(value: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value)
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            "created-at must be an ISO-8601 timestamp"
-        ) from exc
+        raise argparse.ArgumentTypeError("timestamp must be ISO-8601") from exc
     if parsed.tzinfo is None:
-        raise argparse.ArgumentTypeError("created-at must include an offset")
+        raise argparse.ArgumentTypeError("timestamp must include an offset")
     return parsed
 
 
@@ -1464,6 +2448,49 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser = subparsers.add_parser("validate")
     validate_parser.add_argument("--repo", default=".")
     validate_parser.add_argument("--target", required=True)
+
+    allocate_handoff_parser = subparsers.add_parser("allocate-handoff")
+    allocate_handoff_parser.add_argument("--repo", default=".")
+    allocate_handoff_parser.add_argument("--source-worklog", required=True)
+    allocate_handoff_parser.add_argument(
+        "--captured-at", type=_argument_timestamp
+    )
+    allocate_handoff_parser.add_argument(
+        "--work-status-at-capture",
+        choices=sorted(WORK_STATUSES),
+        required=True,
+    )
+    allocate_handoff_parser.add_argument(
+        "--verification-status-at-capture",
+        choices=sorted(VERIFICATION_STATUSES),
+        required=True,
+    )
+    allocate_handoff_parser.add_argument(
+        "--documentation-status-at-capture",
+        choices=sorted(DOCUMENTATION_STATUSES),
+        required=True,
+    )
+    allocate_handoff_parser.add_argument(
+        "--coverage",
+        choices=sorted(HANDOFF_COVERAGE),
+        required=True,
+    )
+    allocate_handoff_parser.add_argument(
+        "--active-process-state",
+        choices=sorted(ACTIVE_PROCESS_STATES),
+        required=True,
+    )
+    allocate_handoff_parser.add_argument(
+        "--verification-evidence",
+        action="append",
+        default=[],
+    )
+    allocate_handoff_parser.add_argument("--allocation-token")
+    allocate_handoff_parser.add_argument("--create", action="store_true")
+
+    validate_handoff_parser = subparsers.add_parser("validate-handoff")
+    validate_handoff_parser.add_argument("--repo", default=".")
+    validate_handoff_parser.add_argument("--target", required=True)
 
     return parser
 
@@ -1505,6 +2532,42 @@ def main(argv: Optional[list[str]] = None) -> int:
             data = allocate_worklog(metadata, template, args.create)
             _success(command, data)
             return 0
+        if command == "allocate-handoff":
+            data = allocate_handoff(
+                Path(args.repo),
+                args.source_worklog,
+                sys.stdin.read(),
+                captured_at=args.captured_at,
+                work_status=args.work_status_at_capture,
+                verification_status=args.verification_status_at_capture,
+                documentation_status=args.documentation_status_at_capture,
+                coverage=args.coverage,
+                active_process_state=args.active_process_state,
+                verification_evidence=args.verification_evidence,
+                create=args.create,
+                allocation_token=args.allocation_token,
+            )
+            _success(command, data)
+            return 0
+        if command == "validate-handoff":
+            result = validate_handoff(Path(args.target), Path(args.repo))
+            _success(command, result, result["warnings"])
+            if result["valid"]:
+                return 0
+            if any(
+                item["code"].startswith("secret.")
+                for item in result["errors"]
+            ):
+                return 8
+            if any(
+                item["code"] == "path.missing" for item in result["errors"]
+            ):
+                return 4
+            if any(
+                item["code"] == "path.unsafe" for item in result["errors"]
+            ):
+                return 3
+            return 7
         if command == "validate":
             result = validate_worklog(Path(args.target), Path(args.repo))
             _success(command, result, result["warnings"])

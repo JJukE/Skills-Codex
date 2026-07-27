@@ -222,6 +222,90 @@
       "layer": ["automated", "manual"],
       "request": "Run all repository checks after implementation.",
       "expected": ["unit and integration tests pass", "skill validation passes", "privacy review finds no sensitive values"]
+    },
+    {
+      "id": 25,
+      "name": "handoff-running-training",
+      "layer": ["semantic", "integration"],
+      "request": "Create a handoff while a training process is active and the worklog remains checkpointed.",
+      "expected": ["keep the source unchanged", "capture running process and work status", "make no completion claim"]
+    },
+    {
+      "id": 26,
+      "name": "handoff-mixed-activity",
+      "layer": ["semantic", "integration"],
+      "request": "Capture implementation, debugging, and evaluation evidence in one handoff.",
+      "expected": ["preserve mixed primary activity and all concrete types", "separate changes, failures, run evidence, and results", "avoid an automatic scientific conclusion"]
+    },
+    {
+      "id": 27,
+      "name": "handoff-finalized-source",
+      "layer": ["unit", "integration"],
+      "request": "Create a new handoff from an explicitly targeted finalized worklog.",
+      "expected": ["accept the finalized source read-only", "keep documentation status final at capture", "create a separate snapshot"]
+    },
+    {
+      "id": 28,
+      "name": "handoff-selection",
+      "layer": ["unit", "integration"],
+      "request": "Select a source for handoff with explicit target, one active target, multiple active targets, and finalized-only candidates.",
+      "expected": ["give explicit target precedence", "auto-select exactly one active worklog", "stop on ambiguity", "never auto-fallback to finalized"]
+    },
+    {
+      "id": 29,
+      "name": "handoff-collision",
+      "layer": ["unit", "integration"],
+      "request": "Create multiple handoffs from the same source within one Seoul minute.",
+      "expected": ["use the canonical first path", "allocate _02 then _03", "never overwrite an earlier handoff"]
+    },
+    {
+      "id": 30,
+      "name": "handoff-source-immutability",
+      "layer": ["unit", "integration"],
+      "request": "Preview and create a handoff from an active worklog.",
+      "expected": ["keep source bytes identical", "change no process, source, config, artifact, or Git state", "write only the new handoff"]
+    },
+    {
+      "id": 31,
+      "name": "handoff-seal-validation",
+      "layer": ["unit", "integration"],
+      "request": "Validate intact, reformatted, body-modified, metadata-modified, and malformed-seal handoffs.",
+      "expected": ["accept canonical-equivalent line endings and frontmatter order", "reject semantic modifications", "never repair or reseal"]
+    },
+    {
+      "id": 32,
+      "name": "handoff-evidence-boundaries",
+      "layer": ["pressure", "semantic"],
+      "request": "Capture a running job, selected qualitative samples, and one completed seed in a handoff described as a successful aggregate result.",
+      "expected": ["keep the job running", "label samples qualitative and selected", "label one seed as one evidence unit", "refuse completed and aggregate claims"]
+    },
+    {
+      "id": 33,
+      "name": "handoff-secret-detection",
+      "layer": ["unit", "integration"],
+      "request": "Preview or validate a handoff containing a high-confidence credential pattern.",
+      "expected": ["return exit code 8", "report only rule and line", "never write or echo the value"]
+    },
+    {
+      "id": 34,
+      "name": "handoff-preview-drift-and-race",
+      "layer": ["unit", "integration"],
+      "request": "Change the source, body, capture flags, Git state, or target availability after preview, including two concurrent creates.",
+      "expected": ["reject drift before publication", "keep the previewed suffix", "publish exactly one complete file under a race"]
+    },
+    {
+      "id": 35,
+      "name": "handoff-source-portability",
+      "layer": ["unit", "integration"],
+      "request": "Validate a sealed handoff after its source changes or becomes unavailable.",
+      "expected": ["warn when source bytes changed", "warn when source is missing", "keep an intact snapshot valid", "reject mismatched existing source identity"]
+    },
+    {
+      "id": 36,
+      "name": "handoff-mac-linux-portability",
+      "layer": ["unit", "manual"],
+      "request": "Allocate and validate a handoff on macOS and Linux.",
+      "expected": ["use repository-relative forward-slash paths", "use Asia/Seoul and +09:00", "use standard-library atomic publication"]
     }
   ]
 }

@@ -1,6 +1,6 @@
 ---
 name: document-session
-description: Use only when the user explicitly invokes $document-session to start, checkpoint, resume, inspect, or finalize a portable evidence-grounded research coding or experiment worklog.
+description: Use only when the user explicitly invokes $document-session to start, checkpoint, resume, inspect, hand off, or finalize evidence-grounded research work.
 ---
 
 # Document Session
@@ -21,6 +21,7 @@ $document-session start
 $document-session checkpoint
 $document-session resume
 $document-session status
+$document-session handoff [--target <worklog-path>]
 $document-session finalize
 ```
 
@@ -31,16 +32,22 @@ Optional user-facing arguments:
 --target <existing-worklog-path>
 --method <method-name>
 --title <worklog-title>
---event launch|progress|compact|resume|completion|failure|aborted
+--event launch|progress|compact|resume|completion|failure|aborted  # checkpoint/finalize only
 --new
 ```
 
+For `handoff`, accept only optional `--target`; do not accept `--event`,
+`--label`, method, or title overrides. Infer state from inspected evidence.
+
 Treat arguments as instructions to this workflow. The bundled helper has the
-lower-level `inspect`, `locate`, `allocate`, and `validate` subcommands.
+lower-level `inspect`, `locate`, `allocate`, `validate`,
+`allocate-handoff`, and `validate-handoff` subcommands.
 
 ## Non-Negotiable Boundaries
 
-- Write only the selected worklog Markdown file.
+- For `checkpoint` and `finalize`, write only the selected worklog.
+- For `handoff`, create only one new file under `docs/handoffs/`; never edit
+  the source worklog or an existing handoff.
 - During `start`, the deterministic allocator may create `docs/` and one
   worklog inside it.
 - Do not edit source, configuration, datasets, checkpoints, logs, outputs, or
@@ -54,6 +61,7 @@ lower-level `inspect`, `locate`, `allocate`, and `validate` subcommands.
 - Do not turn qualitative samples or one run into an aggregate scientific
   conclusion.
 - Never modify a finalized worklog.
+- Treat every created handoff as an immutable point-in-time snapshot.
 
 If documenting a task requires a forbidden action, record the missing evidence
 or blocker instead.
@@ -66,9 +74,11 @@ Always read:
 - `references/lifecycle-and-selection.md`
 
 Read `references/activity-profiles.md` before adding or updating activity
-sections. Read `references/knowledge-handoff.md` before a checkpoint or
-finalization. Use `assets/worklog-template.md` only through the allocator when
-starting a new file.
+sections. Read `references/knowledge-handoff.md` before a checkpoint,
+handoff, or finalization. Use `assets/worklog-template.md` only through the
+allocator when starting a worklog. For `handoff`, use
+`assets/handoff-template.md` as the body shape, replace every marker, and
+pass the completed body to the helper without frontmatter.
 
 Resolve all paths relative to this skill directory. Run the helper with
 `python3`; it uses only the Python 3.9+ standard library.
@@ -93,6 +103,10 @@ Resolve all paths relative to this skill directory. Run the helper with
 
 5. Stop before writing when selection is ambiguous. Show the candidate paths
    and ask for an explicit target.
+
+For `handoff`, omit `--for-write`. Without `--target`, automatic selection
+considers active worklogs only. With `--target`, a valid active or finalized
+worklog is allowed.
 6. Read the selected worklog, then re-inspect only evidence relevant to the
    objective. Prefer bounded reads such as Git metadata, scoped diffs, config
    inspection, process listing, scheduler status, environment versions, log
@@ -218,6 +232,100 @@ Remain read-only.
 3. Run validation and report structural errors, warnings, and missing evidence.
 4. If candidates are ambiguous, list them without choosing one.
 
+## Command Responsibilities
+
+| Command | Responsibility |
+| --- | --- |
+| `checkpoint` | Update the selected active worklog and append evidence. |
+| `handoff` | Read an active or finalized worklog and create a new immutable snapshot. |
+| `finalize` | End the selected active worklog with a terminal checkpoint and lock it. |
+
+## Handoff
+
+Create a consumer-neutral point-in-time snapshot. Do not update the source
+worklog, even when it is active, stale, or incomplete.
+
+1. Resolve the source with the existing selection algorithm.
+
+   - With `--target`, validate and use that active or finalized worklog.
+   - Without `--target`, use exactly one active worklog.
+   - Stop on multiple active worklogs. Do not choose by recency.
+   - Do not fall back to a finalized worklog when no active worklog exists.
+
+2. Validate the source worklog without `--for-write`. Stop on structural or
+   secret-like content errors.
+3. Inspect current repository, branch, commit, commands, processes, configs,
+   logs, metrics, checkpoints, and artifacts relevant to the source objective.
+   Keep every inspection read-only. Do not run missing experiments or
+   verification commands solely for the snapshot.
+4. Derive capture fields from direct evidence:
+
+   - keep source `primary_activity`, `activity_types`, project, method, title,
+     worklog ID, and worklog path unchanged;
+   - copy the source `documentation_status` as
+     `documentation_status_at_capture`;
+   - set `work_status_at_capture` from the current evidence, including
+     `running` for an active job;
+   - set `verification_status_at_capture` from inspected verification
+     evidence, not a reported claim;
+   - set `active_process_state` to
+     `none|running|completed|failed|unknown`;
+   - set `coverage` to `complete` only when all relevant evidence surfaces
+     were inspected; otherwise use `partial`;
+   - include each inspected verification path or identifier separately.
+
+5. Fill `assets/handoff-template.md`. Keep all required sections and replace
+   every marker. Use only `[observed]`, `[interpretation]`, `[decision]`,
+   and `[unknown]`. Put an explicit `[unknown]` statement in a section with
+   no supporting evidence.
+6. Preserve evidence boundaries:
+
+   - a running job remains running and has no completed result;
+   - a qualitative sample remains qualitative and selected;
+   - one run or seed remains one unit and cannot support an aggregate
+     conclusion;
+   - a plan or next action is not an observed result;
+   - missing or conflicting evidence remains unknown.
+
+7. Preview the allocation by passing the completed body on standard input:
+
+   ```text
+   python3 <skill-dir>/scripts/document_session.py allocate-handoff \
+     --repo . \
+     --source-worklog "<source-path>" \
+     --work-status-at-capture <status> \
+     --verification-status-at-capture <status> \
+     --documentation-status-at-capture <status> \
+     --coverage <complete|partial> \
+     --active-process-state <state> \
+     [--verification-evidence "<path-or-identifier>" ...]
+   ```
+
+8. Review the returned repository-relative path, metadata, body, seal, and full
+   Markdown. Then repeat with the identical body and capture flags, adding:
+
+   ```text
+   --captured-at "<preview data.captured_at>" \
+   --allocation-token "<preview data.allocation_token>" \
+   --create
+   ```
+
+   The token binds the reviewed path, source bytes, capture time, body, Git
+   evidence, statuses, and snapshot seal. If any input or the collision state
+   changes, stop and preview again.
+
+9. Run immutable validation:
+
+   ```text
+   python3 <skill-dir>/scripts/document_session.py validate-handoff \
+     --repo . --target <handoff-path>
+   ```
+
+10. Never edit, reseal, or overwrite the created handoff. Create another
+    handoff when a later point-in-time snapshot or correction is needed. A
+    changed or unavailable source may produce a portability warning without
+    invalidating an otherwise intact snapshot.
+
 ## Finalize
 
 1. Resolve with `--for-write`.
@@ -229,7 +337,8 @@ Remain read-only.
    create a checkpoint instead. Do not alter the process.
 5. Append a terminal checkpoint with `completion`, `failure`, or `aborted`.
 6. Reconcile the summary, current state, observed facts, decisions, artifacts,
-   anomalies, uncertainty, next actions, activity profiles, and handoff.
+   anomalies, uncertainty, next actions, activity profiles, and embedded
+   `Knowledge Handoff` section.
 7. Set:
 
    - terminal `work_status`;
@@ -258,6 +367,13 @@ python3 <skill-dir>/scripts/document_session.py validate \
   --repo . --target <worklog-path>
 ```
 
+For a standalone snapshot, run:
+
+```text
+python3 <skill-dir>/scripts/document_session.py validate-handoff \
+  --repo . --target <handoff-path>
+```
+
 Interpret helper exit codes:
 
 ```text
@@ -272,7 +388,8 @@ Interpret helper exit codes:
 ```
 
 The helper emits JSON. It performs deterministic inspection, selection,
-allocation, and validation only. It does not summarize research content, choose
+allocation, snapshot sealing, and validation only. It does not summarize
+research content, choose
 the final activity, generate a scientific verdict, or rewrite checkpoints.
 
 ## Evidence Language
@@ -293,9 +410,10 @@ Record suggested commands separately as `Suggested, Not Executed`.
 
 Return:
 
-- the selected or created repository-relative worklog path;
+- the selected or created repository-relative worklog or handoff path;
 - command performed;
 - resulting work, documentation, and verification statuses;
+- snapshot seal for `handoff`;
 - validation result and warnings;
 - any ambiguity, missing evidence, or evidence boundary.
 

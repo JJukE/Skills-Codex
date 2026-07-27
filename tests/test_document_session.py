@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +34,19 @@ def init_repo(repo: Path) -> None:
 def run_cli(*args: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(SCRIPT_PATH), *(str(arg) for arg in args)],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+
+
+def run_cli_input(
+    input_text: str,
+    *args: object,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), *(str(arg) for arg in args)],
+        input=input_text,
         check=False,
         text=True,
         capture_output=True,
@@ -181,6 +195,84 @@ No result is established by this initial worklog.
 ### Suggested Stable Identifiers
 
 - project name: `example-research`
+"""
+
+
+def finalized_worklog_text(worklog_id: str) -> str:
+    checkpoint = """### 2026-07-28T16:00:00+09:00 — completion: Completed
+
+#### Completed
+
+The documented objective reached its terminal state.
+"""
+    profile = """## Implementation Record
+
+The implementation evidence was reviewed.
+
+"""
+    return (
+        worklog_text(
+            worklog_id,
+            documentation_status="final",
+            checkpoint_count=1,
+            extra_body=profile,
+        )
+        .replace(
+            "last_checkpoint_at: null",
+            'last_checkpoint_at: "2026-07-28T16:00:00+09:00"',
+        )
+        .replace('work_status: "planned"', 'work_status: "completed"')
+        .replace("No checkpoint has been recorded yet.", checkpoint)
+    )
+
+
+def handoff_body(title: str = "Model Update") -> str:
+    return f"""# {title} - Research Handoff
+
+## Current Scope and State
+
+- [observed] Training is running at capture time.
+- [unknown] Completion remains unknown.
+
+## Implementation Changes
+
+- [observed] The source worklog records the implementation scope.
+
+## Experiment and Run Evidence
+
+- [observed] The active process state is running.
+
+## Observed Results
+
+- [unknown] No completed quantitative result is available.
+
+## Decisions
+
+- [decision] Preserve the running state without a completion claim.
+
+## Failures and Anomalies
+
+- [unknown] No failure evidence was available at capture time.
+
+## Artifacts
+
+- [observed] The source worklog is the only confirmed artifact.
+
+## Reproducibility Constraints
+
+- [observed] Repository access is required.
+
+## Uncertainty and Evidence Boundaries
+
+- [unknown] One running process does not establish an aggregate result.
+
+## Next Actions
+
+- [interpretation] Re-check the process and metrics after it stops.
+
+## Coverage Limitations
+
+- [unknown] Runtime logs and checkpoints were not independently inspected.
 """
 
 
@@ -973,6 +1065,704 @@ The documented objective reached its terminal state.
             self.assertFalse(unknown["valid"])
             self.assertIn("final.commit-unknown", json.dumps(unknown["errors"]))
 
+
+    def test_handoff_preview_create_collision_and_source_immutability(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            docs = repo / "docs"
+            docs.mkdir()
+            source = docs / "260728_1530_unassigned_model-update.md"
+            source.write_text(worklog_text(source.stem), encoding="utf-8")
+            source_before = source.read_bytes()
+            args = (
+                "allocate-handoff",
+                "--repo",
+                repo,
+                "--source-worklog",
+                source.relative_to(repo),
+                "--captured-at",
+                "2026-07-28T15:30:00+00:00",
+                "--work-status-at-capture",
+                "running",
+                "--verification-status-at-capture",
+                "not_verified",
+                "--documentation-status-at-capture",
+                "in_progress",
+                "--coverage",
+                "partial",
+                "--active-process-state",
+                "running",
+            )
+
+            preview = run_cli_input(handoff_body(), *args)
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            proposal = json.loads(preview.stdout)["data"]
+            self.assertEqual(
+                proposal["path"],
+                "docs/handoffs/260729_0030_unspecified-method_model-update.md",
+            )
+            self.assertFalse((repo / proposal["path"]).exists())
+            self.assertRegex(proposal["allocation_token"], r"^[^.]+\.[0-9a-f]{64}$")
+            self.assertRegex(
+                proposal["frontmatter"]["snapshot_sha256"],
+                r"^[0-9a-f]{64}$",
+            )
+
+            created = run_cli_input(
+                handoff_body(),
+                *args,
+                "--allocation-token",
+                proposal["allocation_token"],
+                "--create",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            created_data = json.loads(created.stdout)["data"]
+            target = repo / created_data["path"]
+            self.assertTrue(target.exists())
+            self.assertEqual(created_data["markdown"], proposal["markdown"])
+            self.assertEqual(source.read_bytes(), source_before)
+
+            second_preview = run_cli_input(handoff_body(), *args)
+            self.assertEqual(second_preview.returncode, 0, second_preview.stderr)
+            second = json.loads(second_preview.stdout)["data"]
+            self.assertEqual(
+                second["path"],
+                "docs/handoffs/260729_0030_unspecified-method_model-update_02.md",
+            )
+
+    def test_handoff_captures_mixed_running_state_and_current_git_identity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            init_repo(repo)
+            seed = repo / "seed.txt"
+            seed.write_text("seed\n", encoding="utf-8")
+            run_git(repo, "add", "seed.txt")
+            run_git(
+                repo,
+                "-c",
+                "user.name=Test User",
+                "-c",
+                "user.email=none",
+                "commit",
+                "-qm",
+                "initial",
+            )
+            head = run_git(repo, "rev-parse", "HEAD")
+            branch = run_git(repo, "branch", "--show-current")
+            docs = repo / "docs"
+            docs.mkdir()
+            source = docs / "260728_1530_method-model_model-update.md"
+            source_text = (
+                worklog_text(source.stem)
+                .replace("method: null", 'method: "Method Model"')
+                .replace(
+                    'primary_activity: "implementation"',
+                    'primary_activity: "mixed"',
+                )
+                .replace(
+                    'activity_types: ["implementation"]',
+                    'activity_types: ["implementation", "evaluation", "debugging"]',
+                )
+            )
+            source.write_text(source_text, encoding="utf-8")
+
+            preview = run_cli_input(
+                handoff_body(),
+                "allocate-handoff",
+                "--repo",
+                repo,
+                "--source-worklog",
+                source,
+                "--captured-at",
+                "2026-07-28T16:45:00+09:00",
+                "--work-status-at-capture",
+                "running",
+                "--verification-status-at-capture",
+                "partially_verified",
+                "--documentation-status-at-capture",
+                "in_progress",
+                "--coverage",
+                "partial",
+                "--active-process-state",
+                "running",
+                "--verification-evidence",
+                "logs/train.log",
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            metadata = json.loads(preview.stdout)["data"]["frontmatter"]
+            self.assertEqual(metadata["primary_activity"], "mixed")
+            self.assertEqual(
+                metadata["activity_types"],
+                ["implementation", "evaluation", "debugging"],
+            )
+            self.assertEqual(metadata["work_status_at_capture"], "running")
+            self.assertEqual(metadata["active_process_state"], "running")
+            self.assertEqual(metadata["repository"], repo.name)
+            self.assertEqual(metadata["branch"], branch)
+            self.assertEqual(metadata["commit_at_capture"], head)
+
+    def test_handoff_explicit_finalized_source_and_no_auto_fallback(self):
+        module = self.load_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            docs = repo / "docs"
+            docs.mkdir()
+            source = docs / "260728_1530_unassigned_model-update.md"
+            source.write_text(finalized_worklog_text(source.stem), encoding="utf-8")
+
+            with self.assertRaises(module.DocumentSessionError) as raised:
+                module.resolve_target(repo, None, None)
+            self.assertEqual(raised.exception.code, "target.not-found")
+
+            selected = module.resolve_target(repo, str(source), None)
+            self.assertEqual(selected["documentation_status"], "final")
+            preview = run_cli_input(
+                handoff_body(),
+                "allocate-handoff",
+                "--repo",
+                repo,
+                "--source-worklog",
+                source,
+                "--captured-at",
+                "2026-07-28T16:45:00+09:00",
+                "--work-status-at-capture",
+                "completed",
+                "--verification-status-at-capture",
+                "partially_verified",
+                "--documentation-status-at-capture",
+                "final",
+                "--coverage",
+                "partial",
+                "--active-process-state",
+                "completed",
+                "--verification-evidence",
+                "tests/results.txt",
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            metadata = json.loads(preview.stdout)["data"]["frontmatter"]
+            self.assertEqual(metadata["documentation_status_at_capture"], "final")
+
+    def test_handoff_rejects_status_contradictions_incomplete_body_and_secrets(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            docs = repo / "docs"
+            docs.mkdir()
+            source = docs / "260728_1530_unassigned_model-update.md"
+            source.write_text(worklog_text(source.stem), encoding="utf-8")
+            base = (
+                "allocate-handoff",
+                "--repo",
+                repo,
+                "--source-worklog",
+                source,
+                "--captured-at",
+                "2026-07-28T16:45:00+09:00",
+                "--documentation-status-at-capture",
+                "in_progress",
+                "--coverage",
+                "partial",
+            )
+
+            running_completed = run_cli_input(
+                handoff_body(),
+                *base,
+                "--work-status-at-capture",
+                "completed",
+                "--verification-status-at-capture",
+                "not_verified",
+                "--active-process-state",
+                "running",
+            )
+            self.assertEqual(running_completed.returncode, 3)
+            self.assertEqual(
+                json.loads(running_completed.stderr)["error"]["code"],
+                "handoff.status-contradiction",
+            )
+
+            verified_without_evidence = run_cli_input(
+                handoff_body(),
+                *base,
+                "--work-status-at-capture",
+                "partial",
+                "--verification-status-at-capture",
+                "verified",
+                "--active-process-state",
+                "completed",
+            )
+            self.assertEqual(verified_without_evidence.returncode, 3)
+            self.assertEqual(
+                json.loads(verified_without_evidence.stderr)["error"]["code"],
+                "handoff.verification-evidence",
+            )
+
+            incomplete = run_cli_input(
+                "# Model Update - Research Handoff\n",
+                *base,
+                "--work-status-at-capture",
+                "partial",
+                "--verification-status-at-capture",
+                "not_verified",
+                "--active-process-state",
+                "unknown",
+            )
+            self.assertEqual(incomplete.returncode, 3)
+            self.assertEqual(
+                json.loads(incomplete.stderr)["error"]["code"],
+                "handoff.body",
+            )
+
+            secret = "ghp_" + ("1" * 36)
+            secret_result = run_cli_input(
+                handoff_body().replace(
+                    "Repository access is required.",
+                    f"Credential: {secret}",
+                ),
+                *base,
+                "--work-status-at-capture",
+                "partial",
+                "--verification-status-at-capture",
+                "not_verified",
+                "--active-process-state",
+                "unknown",
+            )
+            self.assertEqual(secret_result.returncode, 8)
+            self.assertNotIn(secret, secret_result.stdout)
+            self.assertNotIn(secret, secret_result.stderr)
+
+    def test_handoff_token_binds_source_body_path_and_is_single_use(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            docs = repo / "docs"
+            docs.mkdir()
+            source = docs / "260728_1530_unassigned_model-update.md"
+            source.write_text(worklog_text(source.stem), encoding="utf-8")
+            args = (
+                "allocate-handoff",
+                "--repo",
+                repo,
+                "--source-worklog",
+                source,
+                "--captured-at",
+                "2026-07-28T16:45:00+09:00",
+                "--work-status-at-capture",
+                "running",
+                "--verification-status-at-capture",
+                "not_verified",
+                "--documentation-status-at-capture",
+                "in_progress",
+                "--coverage",
+                "partial",
+                "--active-process-state",
+                "running",
+            )
+            preview = run_cli_input(handoff_body(), *args)
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            proposal = json.loads(preview.stdout)["data"]
+            encoded, digest = proposal["allocation_token"].split(".", 1)
+            malformed_token = f"{encoded}!!!!.{digest}"
+            malformed = run_cli_input(
+                handoff_body(),
+                *args,
+                "--allocation-token",
+                malformed_token,
+                "--create",
+            )
+            self.assertEqual(malformed.returncode, 3)
+            self.assertEqual(
+                json.loads(malformed.stderr)["error"]["code"],
+                "handoff.allocation-token",
+            )
+            self.assertFalse((repo / proposal["path"]).exists())
+
+
+            body_drift = run_cli_input(
+                handoff_body().replace(
+                    "Training is running",
+                    "Training may be running",
+                ),
+                *args,
+                "--allocation-token",
+                proposal["allocation_token"],
+                "--create",
+            )
+            self.assertEqual(body_drift.returncode, 3)
+            self.assertEqual(
+                json.loads(body_drift.stderr)["error"]["code"],
+                "handoff.allocation-drift",
+            )
+            self.assertFalse((repo / "docs/handoffs").exists())
+
+            source.write_text(
+                source.read_text(encoding="utf-8").replace(
+                    "Exact test command is unknown.",
+                    "Test command remains unknown.",
+                ),
+                encoding="utf-8",
+            )
+            source_drift = run_cli_input(
+                handoff_body(),
+                *args,
+                "--allocation-token",
+                proposal["allocation_token"],
+                "--create",
+            )
+            self.assertEqual(source_drift.returncode, 3)
+            self.assertEqual(
+                json.loads(source_drift.stderr)["error"]["code"],
+                "handoff.allocation-drift",
+            )
+
+            fresh = run_cli_input(handoff_body(), *args)
+            self.assertEqual(fresh.returncode, 0, fresh.stderr)
+            fresh_data = json.loads(fresh.stdout)["data"]
+            created = run_cli_input(
+                handoff_body(),
+                *args,
+                "--allocation-token",
+                fresh_data["allocation_token"],
+                "--create",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            reused = run_cli_input(
+                handoff_body(),
+                *args,
+                "--allocation-token",
+                fresh_data["allocation_token"],
+                "--create",
+            )
+            self.assertEqual(reused.returncode, 3)
+            self.assertEqual(
+                json.loads(reused.stderr)["error"]["code"],
+                "handoff.allocation-conflict",
+            )
+
+    def test_handoff_concurrent_create_publishes_exactly_one_complete_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            docs = repo / "docs"
+            docs.mkdir()
+            source = docs / "260728_1530_unassigned_model-update.md"
+            source.write_text(worklog_text(source.stem), encoding="utf-8")
+            args = (
+                "allocate-handoff",
+                "--repo",
+                repo,
+                "--source-worklog",
+                source,
+                "--captured-at",
+                "2026-07-28T16:45:00+09:00",
+                "--work-status-at-capture",
+                "running",
+                "--verification-status-at-capture",
+                "not_verified",
+                "--documentation-status-at-capture",
+                "in_progress",
+                "--coverage",
+                "partial",
+                "--active-process-state",
+                "running",
+            )
+            preview = run_cli_input(handoff_body(), *args)
+            self.assertEqual(preview.returncode, 0, preview.stderr)
+            proposal = json.loads(preview.stdout)["data"]
+            create_args = (
+                *args,
+                "--allocation-token",
+                proposal["allocation_token"],
+                "--create",
+            )
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                results = list(
+                    executor.map(
+                        lambda _: run_cli_input(handoff_body(), *create_args),
+                        range(2),
+                    )
+                )
+            self.assertEqual(sorted(result.returncode for result in results), [0, 3])
+            target = repo / proposal["path"]
+            self.assertEqual(target.read_text(encoding="utf-8"), proposal["markdown"])
+            self.assertFalse(list(target.parent.glob(".*.tmp")))
+
+    def test_validate_handoff_enforces_seal_and_tolerates_canonical_formatting(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            docs = repo / "docs"
+            docs.mkdir()
+            source = docs / "260728_1530_unassigned_model-update.md"
+            source.write_text(worklog_text(source.stem), encoding="utf-8")
+            args = (
+                "allocate-handoff",
+                "--repo",
+                repo,
+                "--source-worklog",
+                source,
+                "--captured-at",
+                "2026-07-28T16:45:00+09:00",
+                "--work-status-at-capture",
+                "running",
+                "--verification-status-at-capture",
+                "not_verified",
+                "--documentation-status-at-capture",
+                "in_progress",
+                "--coverage",
+                "partial",
+                "--active-process-state",
+                "running",
+            )
+            preview = run_cli_input(handoff_body(), *args)
+            proposal = json.loads(preview.stdout)["data"]
+            created = run_cli_input(
+                handoff_body(),
+                *args,
+                "--allocation-token",
+                proposal["allocation_token"],
+                "--create",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            target = repo / proposal["path"]
+
+            valid = run_cli(
+                "validate-handoff",
+                "--repo",
+                repo,
+                "--target",
+                target.relative_to(repo),
+            )
+            self.assertEqual(valid.returncode, 0, valid.stderr)
+            self.assertTrue(json.loads(valid.stdout)["data"]["valid"])
+
+            text = target.read_text(encoding="utf-8")
+            lines = text.splitlines()
+            closing = lines.index("---", 1)
+            frontmatter_lines = lines[1:closing]
+            target.write_bytes(
+                (
+                    "---\r\n"
+                    + "\r\n".join(reversed(frontmatter_lines))
+                    + "\r\n---\r\n"
+                    + "\r\n".join(lines[closing + 1 :])
+                    + "\r\n"
+                ).encode("utf-8")
+            )
+            canonical_equivalent = run_cli(
+                "validate-handoff", "--repo", repo, "--target", target
+            )
+            self.assertEqual(
+                canonical_equivalent.returncode,
+                0,
+                canonical_equivalent.stdout + canonical_equivalent.stderr,
+            )
+
+            target.write_text(
+                target.read_text(encoding="utf-8").replace(
+                    "Training is running at capture time.",
+                    "Training was completed at capture time.",
+                ),
+                encoding="utf-8",
+            )
+            modified = run_cli(
+                "validate-handoff", "--repo", repo, "--target", target
+            )
+            self.assertEqual(modified.returncode, 7)
+            self.assertIn(
+                "handoff.immutable-modified",
+                json.dumps(json.loads(modified.stdout)["data"]["errors"]),
+            )
+            noncanonical = target.with_name(f"{target.stem}_002.md")
+            noncanonical.write_text(
+                target.read_text(encoding="utf-8").replace(
+                    f'handoff_id: "{target.stem}"',
+                    f'handoff_id: "{noncanonical.stem}"',
+                ),
+                encoding="utf-8",
+            )
+            noncanonical_result = run_cli(
+                "validate-handoff",
+                "--repo",
+                repo,
+                "--target",
+                noncanonical,
+            )
+            self.assertEqual(noncanonical_result.returncode, 7)
+            self.assertIn(
+                "filename.invalid",
+                json.dumps(
+                    json.loads(noncanonical_result.stdout)["data"]["errors"]
+                ),
+            )
+
+
+    def test_validate_handoff_rejects_missing_malformed_and_legacy_seals(self):
+        module = self.load_module()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            handoffs = repo / "docs/handoffs"
+            handoffs.mkdir(parents=True)
+            source_dir = repo / "docs"
+            source = source_dir / "260728_1530_unassigned_model-update.md"
+            source.write_text(worklog_text(source.stem), encoding="utf-8")
+            metadata = {
+                "schema": "research-session-handoff-v1",
+                "handoff_id": "260728_1645_unspecified-method_model-update",
+                "captured_at": "2026-07-28T16:45:00+09:00",
+                "timezone": "Asia/Seoul",
+                "source_worklog_id": source.stem,
+                "source_worklog_path": str(source.relative_to(repo)),
+                "source_worklog_sha256": "0" * 64,
+                "project": "example-research",
+                "method": None,
+                "title": "Model Update",
+                "primary_activity": "implementation",
+                "activity_types": ["implementation"],
+                "documentation_status_at_capture": "in_progress",
+                "work_status_at_capture": "running",
+                "verification_status_at_capture": "not_verified",
+                "active_process_state": "running",
+                "verification_evidence": [],
+                "repository": "example-research",
+                "branch": None,
+                "commit_at_capture": None,
+                "coverage": "partial",
+                "snapshot_sha256": "0" * 64,
+            }
+            target = handoffs / f"{metadata['handoff_id']}.md"
+
+            variants = {
+                "missing": {
+                    k: v
+                    for k, v in metadata.items()
+                    if k != "snapshot_sha256"
+                },
+                "uppercase": {
+                    **metadata,
+                    "snapshot_sha256": ("A" * 64),
+                },
+                "short": {
+                    **metadata,
+                    "snapshot_sha256": ("0" * 63),
+                },
+                "legacy_schema": {
+                    **metadata,
+                    "schema": "chat-handoff-markdown-v1",
+                },
+                "legacy_field": {
+                    **{k: v for k, v in metadata.items() if k != "snapshot_sha256"},
+                    "snapshot_seal": "0" * 64,
+                },
+            }
+            for name, variant in variants.items():
+                with self.subTest(name=name):
+                    arbitrary_order = "\n".join(
+                        f"{key}: {module._json_yaml(value)}"
+                        for key, value in variant.items()
+                    )
+                    target.write_text(
+                        f"---\n{arbitrary_order}\n---\n\n{handoff_body()}",
+                        encoding="utf-8",
+                    )
+                    result = run_cli(
+                        "validate-handoff", "--repo", repo, "--target", target
+                    )
+                    self.assertEqual(result.returncode, 7)
+
+    def test_validate_handoff_warns_when_source_changes_or_is_missing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            docs = repo / "docs"
+            docs.mkdir()
+            source = docs / "260728_1530_unassigned_model-update.md"
+            source.write_text(worklog_text(source.stem), encoding="utf-8")
+            args = (
+                "allocate-handoff",
+                "--repo",
+                repo,
+                "--source-worklog",
+                source,
+                "--captured-at",
+                "2026-07-28T16:45:00+09:00",
+                "--work-status-at-capture",
+                "partial",
+                "--verification-status-at-capture",
+                "not_verified",
+                "--documentation-status-at-capture",
+                "in_progress",
+                "--coverage",
+                "partial",
+                "--active-process-state",
+                "unknown",
+            )
+            preview = run_cli_input(handoff_body(), *args)
+            proposal = json.loads(preview.stdout)["data"]
+            created = run_cli_input(
+                handoff_body(),
+                *args,
+                "--allocation-token",
+                proposal["allocation_token"],
+                "--create",
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            target = repo / proposal["path"]
+
+            source.write_text(
+                source.read_text(encoding="utf-8").replace(
+                    "Exact test command is unknown.",
+                    "Test command remains unknown.",
+                ),
+                encoding="utf-8",
+            )
+            changed = run_cli(
+                "validate-handoff", "--repo", repo, "--target", target
+            )
+            self.assertEqual(changed.returncode, 0, changed.stderr)
+            changed_payload = json.loads(changed.stdout)
+            self.assertIn(
+                "source.changed",
+                [item["code"] for item in changed_payload["data"]["warnings"]],
+            )
+
+            source.unlink()
+            missing = run_cli(
+                "validate-handoff", "--repo", repo, "--target", target
+            )
+            self.assertEqual(missing.returncode, 0, missing.stderr)
+            missing_payload = json.loads(missing.stdout)
+            self.assertIn(
+                "source.missing",
+                [item["code"] for item in missing_payload["data"]["warnings"]],
+            )
+
+    def test_handoff_body_allows_markdown_links_with_evidence_tags(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            docs = repo / "docs"
+            docs.mkdir()
+            source = docs / "260728_1530_unassigned_model-update.md"
+            source.write_text(worklog_text(source.stem), encoding="utf-8")
+            body = handoff_body().replace(
+                "The source worklog records the implementation scope.",
+                "The [source](docs/source.md) records the implementation scope.",
+            )
+            preview = run_cli_input(
+                body,
+                "allocate-handoff",
+                "--repo",
+                repo,
+                "--source-worklog",
+                source,
+                "--captured-at",
+                "2026-07-28T16:45:00+09:00",
+                "--work-status-at-capture",
+                "partial",
+                "--verification-status-at-capture",
+                "not_verified",
+                "--documentation-status-at-capture",
+                "in_progress",
+                "--coverage",
+                "partial",
+                "--active-process-state",
+                "unknown",
+            )
+            self.assertEqual(preview.returncode, 0, preview.stderr)
 
 if __name__ == "__main__":
     unittest.main()

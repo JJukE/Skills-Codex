@@ -1,61 +1,121 @@
 # Knowledge Handoff
 
-Use `Knowledge Handoff` to make verified context portable to another researcher,
-another Codex session, or an unspecified document processor. Do not assume or
-name a destination.
+## Contents
 
-## Durable Technical Findings
+- [Point-in-Time Snapshot](#point-in-time-snapshot)
+- [Evidence Classes](#evidence-classes)
+- [Activity-Aware Interpretation](#activity-aware-interpretation)
+- [Portable Content](#portable-content)
+- [Embedded Worklog Section](#embedded-worklog-section)
+- [Immutable Publication](#immutable-publication)
 
-Record confirmed technical facts that can be reused. Cite repository-relative
-source, config, log, metric, or artifact paths when possible. Label inferences.
+Use the embedded `Knowledge Handoff` worklog section for durable context that
+changes with checkpoints. Use the `handoff` command when a separate immutable
+point-in-time snapshot is required. Both forms remain portable and
+consumer-neutral.
 
-## Reproducibility Constraints
+## Point-in-Time Snapshot
 
-Record required environment, data, checkpoint, version, platform, and hardware
-conditions. Record unknowns that prevent exact reproduction.
+A standalone handoff records what the available evidence established at one
+capture timestamp. It may be created from an active, checkpointed, or finalized
+worklog. It never changes the source and it never turns an active run into a
+terminal result.
 
-## Research Decisions
+Include these sections in order:
 
-Record explicit design or experiment decisions and their evidence-grounded
-rationale. Do not rewrite plans as completed decisions.
+1. `Current Scope and State`
+2. `Implementation Changes`
+3. `Experiment and Run Evidence`
+4. `Observed Results`
+5. `Decisions`
+6. `Failures and Anomalies`
+7. `Artifacts`
+8. `Reproducibility Constraints`
+9. `Uncertainty and Evidence Boundaries`
+10. `Next Actions`
+11. `Coverage Limitations`
 
-## Experiment Evidence
+Keep every section non-empty. When evidence is unavailable, write a precise
+`[unknown]` statement instead of filling the gap from memory.
 
-Reference concrete run IDs, protocols, metrics, raw counts, and artifact paths.
-State the unit of evidence and the conclusion boundary.
+## Evidence Classes
 
-## Failure Patterns
+Use these labels:
 
-Record repeatable or reusable failure patterns. Label a one-off anomaly as a
-single occurrence. Separate symptom, workaround, hypothesis, and confirmed root
-cause.
+- `[observed]`: directly supported by inspected repository, Git, command,
+  process, config, log, metric, checkpoint, or artifact evidence;
+- `[interpretation]`: a bounded explanation derived from named observations;
+- `[decision]`: an explicit design or experiment choice and rationale;
+- `[unknown]`: absent, incomplete, conflicting, or unsafe-to-record evidence.
 
-## Candidate Follow-up Topics
+Keep plans and proposed next actions out of observed results.
 
-List possible future method, dataset, experiment, debugging, or analysis work.
-Candidates are not commitments and are not observed results.
+## Activity-Aware Interpretation
 
-## Evidence Boundaries
+For implementation, refactoring, or debugging, distinguish changed code,
+inspected diff, executed verification, workaround, hypothesis, and confirmed
+root cause.
 
-State what this worklog cannot establish, including incomplete runs, missing
-artifacts, protocol differences, selection bias, unverified code, and
-unaggregated seeds.
+For training, inference, evaluation, or ablation, record process state, run
+identifier, config, checkpoint, metric source, protocol, seed, and aggregation
+unit when observed. Apply these boundaries:
 
-## Suggested Stable Identifiers
+- a running process has progress evidence, not a completed result;
+- selected inference samples are qualitative and selected;
+- one run or one seed is one evidence unit, not an aggregate conclusion;
+- a metric without its protocol, split, or source retains that limitation;
+- a reported command result without inspected command, status, or output is not
+  verified.
 
-Suggest generic identifiers only when supported:
+For mixed activity, preserve each material activity in the body instead of
+collapsing debugging, implementation, and evaluation into one result claim.
 
-- project name;
-- method name;
-- dataset name;
-- run ID;
-- result label;
-- failure label.
+## Portable Content
 
-Do not invent an external path, entity ID, page, collection, or routing target.
+Record repository-relative paths and stable identifiers when available. Include
+the source worklog ID and path, current repository, branch, commit, capture
+timestamp, activity, statuses, process state, verification evidence, and
+coverage in frontmatter.
 
-## Machine-Readable Metadata
+In the body, record:
 
-Do not include a nested machine-readable block in the MVP. Frontmatter already
-provides stable scalar and list fields. Keeping detailed findings in Markdown
-avoids duplicated sources of truth and remains independent of any consumer.
+- current scope and state;
+- implementation changes;
+- experiment and run evidence;
+- observed results;
+- decisions;
+- failures and anomalies;
+- artifacts;
+- reproducibility constraints;
+- uncertainties and evidence boundaries;
+- proposed next actions;
+- evidence surfaces that were not inspected.
+
+Do not invent a destination, routing target, or identifier. Do not copy secret
+or credential values. Record only that a value was redacted and where safe
+evidence can be re-inspected.
+
+## Embedded Worklog Section
+
+Keep the mutable worklog section concise:
+
+- durable technical findings;
+- reproducibility constraints;
+- research decisions;
+- experiment evidence;
+- failure patterns;
+- candidate follow-up topics;
+- evidence boundaries;
+- stable identifiers supported by evidence.
+
+Checkpoint may update this embedded section. Finalize reconciles it before
+locking the worklog. Handoff reads it as one evidence source but creates a
+separate file.
+
+## Immutable Publication
+
+Preview the complete snapshot before creation. The helper binds the source
+bytes, capture metadata, path, body, and seal to the allocation token. After
+creation, validate the seal and never edit or reseal the file. Create another
+handoff for a later state or correction. A missing or later-changed source is a
+coverage warning; it does not change the captured bytes or conclusions.

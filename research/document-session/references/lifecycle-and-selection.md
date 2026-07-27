@@ -1,5 +1,12 @@
 # Lifecycle and Selection
 
+## Contents
+
+- [State Machine](#state-machine)
+- [Selection Algorithm](#selection-algorithm)
+- [Command Contract](#command-contract)
+- [Checkpoint Format](#checkpoint-format)
+
 ## State Machine
 
 ```text
@@ -18,6 +25,8 @@ Allowed transitions:
   checkpoint may set `checkpointed -> in_progress`
 - `finalize`: `in_progress|checkpointed -> final` after revalidation
 - `status`: no transition
+- `handoff`: no source transition; create a new immutable snapshot from
+  `in_progress|checkpointed|final`
 
 Forbidden transitions:
 
@@ -42,6 +51,13 @@ The MVP has no repository config, so step 2 is intentionally unavailable.
 Automatic discovery considers only canonical Markdown files directly inside
 `docs/`. An explicit target must satisfy the same location, filename,
 frontmatter identity, and initial timestamp contract before selection.
+
+For `handoff`, keep the same selection order with these constraints:
+
+- without `--target`, consider active worklogs only and require exactly one;
+- never fall back to a finalized worklog;
+- with `--target`, allow a valid active or finalized worklog;
+- never pass `--for-write`, because the source is not edited.
 
 Use `task_key` to narrow candidates only when it was derived from the same
 objective, method, scope, and repository identity. Then check:
@@ -77,6 +93,12 @@ Allocate a new file for:
 Link a related finalized record through `related_worklogs`; never reopen it.
 
 ## Command Contract
+
+| Command | Source worklog effect | Output |
+| --- | --- | --- |
+| `checkpoint` | Mutate one selected active worklog. | Updated mutable worklog. |
+| `handoff` | Read one active or finalized worklog without changing it. | New immutable Markdown snapshot. |
+| `finalize` | Add a terminal checkpoint and lock one active worklog. | Finalized immutable worklog. |
 
 ### `start`
 
@@ -175,6 +197,39 @@ Failure:
 
 - list ambiguous candidates and stop;
 - do not select a likely candidate.
+
+### `handoff`
+
+Inputs:
+
+- optional `--target <worklog-path>`;
+- no `--event`, `--label`, method, or title override.
+
+Preconditions:
+
+- explicit target is a valid active or finalized worklog; or
+- automatic selection resolves exactly one active worklog;
+- source and relevant current evidence were inspected read-only;
+- body matches the required handoff schema and contains no secret-like value.
+
+Effects:
+
+- keep the source worklog byte-for-byte unchanged;
+- derive capture metadata from the source and current repository evidence;
+- preview one collision-safe `docs/handoffs/` path;
+- publish exactly the reviewed Markdown with an immutable snapshot seal;
+- validate the new handoff without resealing it;
+- permit later handoffs from the same source without changing earlier ones.
+
+Failure:
+
+- stop on ambiguous automatic selection;
+- do not fall back to finalized worklogs without an explicit target;
+- reject source, body, path, capture, Git, status, or collision drift after
+  preview;
+- reject a running process captured as completed or aborted;
+- reject `verified` without explicit verification evidence;
+- never overwrite or repair an existing handoff.
 
 ### `finalize`
 
